@@ -1,179 +1,197 @@
-# Backend Structure Document
-
-This document outlines the backend architecture, hosting, and infrastructure for the **codeguide-starter** project. It uses plain language so anyone can understand how the backend is set up and how it supports the application.
+# Backend Structure Document for Koperasi Pegawai BKI
 
 ## 1. Backend Architecture
 
-- **Framework and Design Pattern**
-  - We use **Next.js API Routes** to handle all server-side logic. These routes live alongside the frontend code in the same repository, making development and deployment simpler.
-  - The backend follows a **layered pattern**:
-    1. **API Layer**: Receives requests (login, registration, data fetch).  
-    2. **Service Layer**: Contains the core business logic (user validation, password hashing).  
-    3. **Data Access Layer**: Talks to the database via a simple ORM (e.g., Prisma or TypeORM).
+**Overall Design**
+- Built on Next.js (App Router) using Node.js and TypeScript
+- Monorepo-style structure: frontend pages and backend API routes live together under `/app`
+- Server Components fetch data securely; Client Components handle user interactions
+- Drizzle ORM provides a type-safe interface to PostgreSQL
+- Better Auth handles session management and magic-link authentication
 
-- **Scalability**
-  - Stateless API routes can scale horizontally—new instances can spin up on demand.  
-  - We can add caching or a message queue (e.g., Redis or RabbitMQ) without changing the core code.
+**Design Patterns & Frameworks**
+- **MVC-Lite**: API routes act as controllers, Drizzle models define data, React Server Components serve as views
+- **Dependency Injection** via custom SDK (`/lib/accurate.ts`) for Accurate.id API calls
+- **Middleware** for Role-Based Access Control (RBAC) and authentication checks
 
-- **Maintainability**
-  - Code for each feature is grouped by route (authentication, dashboard).  
-  - A service layer separates complex logic from request handling.
-
-- **Performance**
-  - Lightweight Node.js handlers keep response times low.  
-  - Future use of database connection pooling and Redis for caching repeated queries.
+**Scalability, Maintainability & Performance**
+- **Scalability**: Next.js auto-scales serverless functions on Vercel, and PostgreSQL scales vertically or via read replicas
+- **Maintainability**: Clear separation of concerns (`/app`, `/lib`, `/db`, `/components`) and consistent TypeScript types
+- **Performance**: Server Components minimize client bundle size; edge caching on Vercel and CDN accelerate asset delivery
 
 ## 2. Database Management
 
-- **Database Choice**
-  - We recommend **PostgreSQL** for structured data and reliable transactions.  
-  - In-memory caching can be added later with **Redis** for session tokens or frequently read data.
+**Technology**
+- Relational database: **PostgreSQL**
+- ORM: **Drizzle ORM** for schema definitions, queries, and migrations
 
-- **Data Storage and Access**
-  - Use an ORM like **Prisma** or **TypeORM** to map JavaScript/TypeScript objects to database tables.
-  - Connection pooling ensures efficient use of database connections under load.
-  - Migrations track schema changes over time, keeping development, staging, and production in sync.
+**Data Organization**
+- Core tables: `profiles`, `payment_requests`, `payment_request_history`, `loan_applications`, `loan_approval_history`
+- Each record tracks status and timestamps for auditability
+- Separate history tables to maintain an immutable log of approval steps
 
-- **Data Practices**
-  - Passwords are never stored in plain text—they are salted and hashed with **bcrypt** before saving.
-  - All outgoing data is typed and validated to prevent malformed records.
+**Data Access & Practices**
+- Use Drizzle’s query builder in API routes to fetch or update records
+- Versioned migration files ensure consistent schema across environments
+- Database seeding scripts initialize default user roles and demo data
 
 ## 3. Database Schema
 
-### Human-Readable Format
+### Human-Readable Schema Overview
 
-- **Users**
-  - **id**: Unique identifier  
-  - **email**: User’s email address (unique)  
-  - **password_hash**: Securely hashed password  
-  - **created_at**: Account creation timestamp
+1. **profiles**: stores user data and roles
+   - `id`, `email`, `name`, `role`, `created_at`, `updated_at`
+2. **payment_requests**: tracks public payment order submissions
+   - `id`, `profile_id`, `amount`, `description`, `status`, `created_at`, `updated_at`
+3. **payment_request_history**: logs status changes for payment requests
+   - `id`, `payment_request_id`, `changed_by`, `from_status`, `to_status`, `timestamp`
+4. **loan_applications**: stores loan requests from members
+   - `id`, `profile_id`, `amount`, `term_months`, `interest_rate`, `status`, `created_at`, `updated_at`
+5. **loan_approval_history**: logs each approval step in loan flow
+   - `id`, `loan_application_id`, `changed_by`, `from_status`, `to_status`, `timestamp`
 
-- **Sessions**
-  - **id**: Unique session record  
-  - **user_id**: Links to a user  
-  - **token**: Random string for authentication  
-  - **expires_at**: When the token stops working  
-  - **created_at**: When the session was created
+### SQL Definitions (PostgreSQL)
 
-- **DashboardItems** *(optional for dynamic data)*
-  - **id**: Unique record  
-  - **title**: Item title  
-  - **content**: Item details  
-  - **created_at**: When the item was added
-
-### SQL Schema (PostgreSQL)
 ```sql
--- Users table
-CREATE TABLE users (
-  id SERIAL PRIMARY KEY,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 1. profiles
+enable extension if not exists "uuid-ossp";
+create table profiles (
+  id            uuid    default uuid_generate_v4() primary key,
+  email         text    not null unique,
+  name          text    not null,
+  role          text    not null,
+  created_at    timestamptz default now() not null,
+  updated_at    timestamptz default now() not null
 );
 
--- Sessions table
-CREATE TABLE sessions (
-  id SERIAL PRIMARY KEY,
-  user_id INT REFERENCES users(id) ON DELETE CASCADE,
-  token VARCHAR(255) UNIQUE NOT NULL,
-  expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 2. payment_requests
+create table payment_requests (
+  id             uuid    default uuid_generate_v4() primary key,
+  profile_id     uuid    references profiles(id) on delete cascade,
+  amount         numeric(12,2) not null,
+  description    text    not null,
+  status         text    not null,
+  created_at     timestamptz default now() not null,
+  updated_at     timestamptz default now() not null
 );
 
--- Dashboard items table
-CREATE TABLE dashboard_items (
-  id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
-  content TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 3. payment_request_history
+create table payment_request_history (
+  id                   uuid    default uuid_generate_v4() primary key,
+  payment_request_id   uuid    references payment_requests(id) on delete cascade,
+  changed_by           uuid    references profiles(id),
+  from_status          text    not null,
+  to_status            text    not null,
+  timestamp            timestamptz default now() not null
 );
-```  
+
+-- 4. loan_applications
+create table loan_applications (
+  id            uuid    default uuid_generate_v4() primary key,
+  profile_id    uuid    references profiles(id) on delete cascade,
+  amount        numeric(12,2) not null,
+  term_months   integer not null,
+  interest_rate numeric(5,2) not null,
+  status        text    not null,
+  created_at    timestamptz default now() not null,
+  updated_at    timestamptz default now() not null
+);
+
+-- 5. loan_approval_history
+create table loan_approval_history (
+  id                   uuid    default uuid_generate_v4() primary key,
+  loan_application_id  uuid    references loan_applications(id) on delete cascade,
+  changed_by           uuid    references profiles(id),
+  from_status          text    not null,
+  to_status            text    not null,
+  timestamp            timestamptz default now() not null
+);
+```
 
 ## 4. API Design and Endpoints
 
-- **Approach**: We follow a **RESTful** style, grouping related endpoints under `/api` directories.
+**Architecture**
+- All endpoints implemented as Next.js API Routes under `/app/api`
+- Proxy routes for Accurate.id under `/app/api/accurate` to keep API keys server-side
+- RESTful conventions: GET for reads, POST for creations, PATCH for updates
 
-- **Key Endpoints**
-  - `POST /api/auth/register`  
-    • Accepts `{ email, password }`  
-    • Creates a new user and issues a session token  
-  - `POST /api/auth/login`  
-    • Accepts `{ email, password }`  
-    • Verifies credentials and returns a session token  
-  - `POST /api/auth/logout`  
-    • Invalidates the session token on the server  
-  - `GET /api/dashboard/data`  
-    • Requires a valid session  
-    • Returns user-specific data or dashboard items  
+**Key Endpoints**
 
-- **Communication**
-  - Frontend sends JSON requests; backend replies with JSON and appropriate HTTP status codes.  
-  - Protected routes check for a valid session token (in cookies or Authorization header).
+| Method | Path                              | Purpose                                         |
+|--------|-----------------------------------|-------------------------------------------------| 
+| POST   | /api/auth/magic-link             | Send magic link email (integrates Accurate.id)  |
+| POST   | /api/auth/callback               | Validate link and establish session             |
+| GET    | /api/accurate/savings            | Fetch member savings from Accurate.id           |
+| GET    | /api/accurate/loans              | Fetch member loan balances from Accurate.id     |
+| POST   | /api/payment-requests            | Create a new payment request                    |
+| GET    | /api/payment-requests/:id        | Retrieve status of a single payment request     |
+| PATCH  | /api/payment-requests/:id/status | Update status (e.g., approve/reject)            |
+| POST   | /api/loan-applications           | Submit a new loan application                   |
+| GET    | /api/loan-applications?status=.. | List loan applications filtered by status       |
+| PATCH  | /api/loan-applications/:id/status| Approve or reject a loan application            |
+
+**Communication Flow**
+1. Frontend calls API routes via Fetch or React Query
+2. API route checks session and RBAC via middleware
+3. Route handler executes Drizzle queries or Accurate SDK calls
+4. Response returned as JSON with consistent envelope `{ data, error }`
 
 ## 5. Hosting Solutions
 
-- **Cloud Provider**:  
-  - **Vercel** (recommended) offers seamless Next.js deployments, auto-scaling, and built-in CDN.  
-  - Alternatively, **Netlify** or any Node.js-capable host will work.
+**Development**
+- **Docker & Docker Compose** spin up local PostgreSQL, environment variables, and build environment consistently
 
-- **Benefits**
-  - **Reliability**: Global servers and failover across regions.  
-  - **Scalability**: Auto-scale serverless functions based on traffic.  
-  - **Cost-Effectiveness**: Pay-per-use model means low cost for small projects.
+**Production**
+- **Vercel** for Next.js deployment
+  - Automatic CI/CD on git pushes
+  - Global edge network for fast page loads
+  - Built-in TLS, CDN, and auto-scaling serverless functions
+
+**Benefits**
+- Zero-configuration deployments on Vercel
+- Pay-as-you-go serverless costs
+- Built-in logging and metrics
 
 ## 6. Infrastructure Components
 
-- **Load Balancer**
-  - Provided by the hosting platform—distributes API requests across function instances.
-
-- **CDN (Content Delivery Network)**
-  - Vercel’s global edge network caches static assets (CSS, JS, images) for faster page loads.
-
-- **Caching**
-  - **Redis** (optional) for session storage or caching dashboard queries to reduce database load.
-
-- **Object Storage**
-  - For file uploads or backups, integrate with AWS S3 or similar services.
-
-- **Message Queue**
-  - In future, use **RabbitMQ** or **Kafka** for background tasks (e.g., email notifications).
+- **Load Balancer / Edge Network**: Vercel’s edge infrastructure distributes traffic across serverless instances
+- **Content Delivery Network (CDN)**: Static assets and public pages cached globally via Vercel/Cloudflare
+- **Caching Layer**: 
+  - Next.js ISR (Incremental Static Regeneration) for public pages
+  - React Query caches member data with stale-while-revalidate
+- **Background Jobs** (future): Use a queue (e.g., BullMQ + Redis) for email notifications and long tasks
 
 ## 7. Security Measures
 
 - **Authentication & Authorization**
-  - Passwords hashed with **bcrypt** and salted.  
-  - Session tokens stored in secure, HttpOnly cookies or Authorization headers.  
-  - Protected endpoints verify tokens before proceeding.
-
+  - Magic link flow with short expiration times
+  - RBAC enforced via Next.js Middleware and server checks
+  - Sessions stored securely (HTTP-only cookies)
 - **Data Encryption**
-  - **HTTPS/TLS** encrypts data in transit.  
-  - Database connections use SSL to encrypt data between the app and the database.
-
-- **Input Validation**
-  - Every incoming request is validated (e.g., valid email format, password length) to prevent SQL injection or other attacks.
-
-- **Web Security Best Practices**
-  - Enable **CORS** policies to limit allowed origins.  
-  - Use **CSRF tokens** or same-site cookies to prevent cross-site requests.  
-  - Set secure headers with **Helmet** or a similar middleware.
+  - TLS for all in-transit traffic
+  - Environment variables for secrets (e.g., DB URL, API keys)
+- **API Protection**
+  - Proxy Accurate.id requests to avoid client-side key exposure
+  - Rate limiting on sensitive endpoints
+- **Compliance & Auditing**
+  - History tables track every status change
+  - Logs retained via Vercel’s monitoring or external log provider (e.g., LogDNA)
 
 ## 8. Monitoring and Maintenance
 
 - **Performance Monitoring**
-  - Integrate **Sentry** or **LogRocket** for real-time crash reporting and performance tracing.  
-  - Use Vercel’s built-in analytics to track request latencies and error rates.
-
-- **Logging**
-  - Structured logs (JSON) for all API requests and errors, shipped to a log management service like **Datadog** or **Logflare**.
-
-- **Health Checks**
-  - Define a `/health` endpoint that returns a 200 status if the service is up and the database is reachable.
-
-- **Maintenance Strategies**
-  - Automated migrations run on deploy to keep the database schema up to date.  
-  - Scheduled dependency audits and security scans (e.g., `npm audit`).
-  - Regular backups of the database (daily or weekly depending on usage).
+  - Vercel Analytics for serverless function timings
+  - Frontend Core Web Vitals via Next.js telemetry
+- **Error Tracking**
+  - Sentry or LogRocket for capturing exceptions in API routes and frontend
+- **Health Checks & Alerts**
+  - Uptime monitoring (e.g., Uptime Robot)
+  - Alerts on failed deployments or high error rates
+- **Maintenance Strategy**
+  - Scheduled database backups and migrations
+  - Periodic dependency updates and security audits
+  - Automated tests (unit, integration, end-to-end) run on CI before deployment
 
 ## 9. Conclusion and Overall Backend Summary
 
-The backend for **codeguide-starter** is built on Next.js API Routes and Node.js, paired with PostgreSQL for data and optional Redis for caching. It follows a clear layered architecture that keeps code easy to maintain and extend. With RESTful endpoints for authentication and data, secure practices like password hashing and HTTPS, and hosting on Vercel for scalability and global performance, this setup meets the project’s goals for a fast, secure, and developer-friendly foundation. Future enhancements—such as background job queues, advanced monitoring, or richer data models—can be added without disrupting the core structure.
+The backend for the Koperasi Pegawai BKI application leverages a modern Next.js App Router setup, PostgreSQL with Drizzle ORM, and secure magic-link authentication. It balances scalability—via serverless functions and edge caching—with maintainability through clear folder structures and type-safe code. Key API routes handle everything from public payment requests to multi-step loan approval workflows, while RBAC and audit logs ensure security and compliance. Hosted on Vercel with Docker-powered local development, this infrastructure provides a reliable, cost-effective foundation for growing the cooperative’s digital services.
